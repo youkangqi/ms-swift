@@ -1,0 +1,41 @@
+{
+  "mimic_root": "/root/autodl-tmp/mimic-cxr-jpg/2.1.0",
+  "metadata_csv": "/root/autodl-tmp/mimic-cxr-jpg/2.1.0/mimic-cxr-2.0.0-metadata.csv",
+  "split_csv": "/root/autodl-tmp/mimic-cxr-jpg/2.1.0/mimic-cxr-2.0.0-split.csv.gz",
+  "image_root": "/root/autodl-tmp/mimic-cxr-jpg/2.1.0/files",
+  "report_root": "/root/autodl-tmp/mimic-cxr-jpg/2.1.0/report_files/files",
+  "output_dir": "/root/ms-swift/examples/evdp/data/mimic_cxr_report_sft_smoke",
+  "max_images_per_study": 2,
+  "view_positions": null,
+  "target_sections": [
+    "findings",
+    "impression"
+  ],
+  "fallback_full_report": true,
+  "splits": {
+    "train": {
+      "path": "/root/ms-swift/examples/evdp/data/mimic_cxr_report_sft_smoke/train.jsonl",
+      "num_rows": 8,
+      "rows_before_cap": 8,
+      "candidate_studies": 222758
+    },
+    "val": {
+      "path": "/root/ms-swift/examples/evdp/data/mimic_cxr_report_sft_smoke/val.jsonl",
+      "num_rows": 4,
+      "rows_before_cap": 4,
+      "candidate_studies": 1808
+    },
+    "test": {
+      "path": "/root/ms-swift/examples/evdp/data/mimic_cxr_report_sft_smoke/test.jsonl",
+      "num_rows": 4,
+      "rows_before_cap": 4,
+      "candidate_studies": 3269
+    }
+  },
+  "skips": {
+    "missing_report": 0,
+    "missing_images": 0,
+    "short_report": 0,
+    "long_report": 0
+  }
+}
