@@ -35,6 +35,7 @@ VAL_JSONL="${VAL_JSONL:-${DATA_DIR}/val.jsonl}"
 OUTPUT_DIR="${OUTPUT_DIR:-${TRAIN_RUN_ROOT}/output/qwen3vl4b_mimic_report_sft}"
 SWIFT_LOG_FILE="${SWIFT_LOG_FILE:-${RUN_LOG_DIR}/train_$(date +%Y%m%d_%H%M%S).log}"
 RESUME_FROM_CHECKPOINT="${RESUME_FROM_CHECKPOINT:-}"
+RESUME_ONLY_MODEL="${RESUME_ONLY_MODEL:-false}"
 KEEP_OUTPUT_DIR_ON_RESUME="${KEEP_OUTPUT_DIR_ON_RESUME:-0}"
 
 PREPARE_DATA="${PREPARE_DATA:-0}"
@@ -66,6 +67,22 @@ SAVE_STEPS="${SAVE_STEPS:-500}"
 SAVE_TOTAL_LIMIT="${SAVE_TOTAL_LIMIT:-2}"
 LOGGING_STEPS="${LOGGING_STEPS:-10}"
 WARMUP_RATIO="${WARMUP_RATIO:-0.05}"
+LOAD_BEST_MODEL_AT_END="${LOAD_BEST_MODEL_AT_END:-true}"
+METRIC_FOR_BEST_MODEL="${METRIC_FOR_BEST_MODEL:-eval_loss}"
+GREATER_IS_BETTER="${GREATER_IS_BETTER:-false}"
+CREATE_CHECKPOINT_SYMLINK="${CREATE_CHECKPOINT_SYMLINK:-true}"
+PRESERVE_BEST_CHECKPOINT="${PRESERVE_BEST_CHECKPOINT:-true}"
+BEST_CHECKPOINT_METRIC="${BEST_CHECKPOINT_METRIC:-${METRIC_FOR_BEST_MODEL}}"
+BEST_CHECKPOINT_MODE="${BEST_CHECKPOINT_MODE:-}"
+if [[ -z "${BEST_CHECKPOINT_MODE}" ]]; then
+  if [[ "${GREATER_IS_BETTER}" == "true" || "${GREATER_IS_BETTER}" == "True" || "${GREATER_IS_BETTER}" == "1" ]]; then
+    BEST_CHECKPOINT_MODE="max"
+  else
+    BEST_CHECKPOINT_MODE="min"
+  fi
+fi
+BEST_CHECKPOINT_WATCH_INTERVAL="${BEST_CHECKPOINT_WATCH_INTERVAL:-300}"
+BEST_CHECKPOINT_WATCHER_LOG_FILE="${BEST_CHECKPOINT_WATCHER_LOG_FILE:-${RUN_LOG_DIR}/best_checkpoint_watcher_$(date +%Y%m%d_%H%M%S).log}"
 DATASET_NUM_PROC="${DATASET_NUM_PROC:-4}"
 DATALOADER_NUM_WORKERS="${DATALOADER_NUM_WORKERS:-4}"
 ATTN_IMPL="${ATTN_IMPL:-flash_attn}"
@@ -143,6 +160,9 @@ if [[ -n "${RESUME_FROM_CHECKPOINT}" ]]; then
     OUTPUT_DIR="$(dirname "${RESUME_FROM_CHECKPOINT}")"
   fi
   RESUME_ARGS=(--resume_from_checkpoint "${RESUME_FROM_CHECKPOINT}")
+  if [[ "${RESUME_ONLY_MODEL}" == "true" || "${RESUME_ONLY_MODEL}" == "True" || "${RESUME_ONLY_MODEL}" == "1" ]]; then
+    RESUME_ARGS+=(--resume_only_model true)
+  fi
   ADD_VERSION_ARGS=(--add_version false)
 fi
 
@@ -215,6 +235,10 @@ SFT_CMD=(
   --eval_steps "${EVAL_STEPS}"
   --save_steps "${SAVE_STEPS}"
   --save_total_limit "${SAVE_TOTAL_LIMIT}"
+  --load_best_model_at_end "${LOAD_BEST_MODEL_AT_END}"
+  --metric_for_best_model "${METRIC_FOR_BEST_MODEL}"
+  --greater_is_better "${GREATER_IS_BETTER}"
+  --create_checkpoint_symlink "${CREATE_CHECKPOINT_SYMLINK}"
   --logging_steps "${LOGGING_STEPS}"
   --max_length "${MAX_LENGTH}"
   --output_dir "${OUTPUT_DIR}"
@@ -233,14 +257,54 @@ if [[ "${DRY_RUN}" == "1" ]]; then
     "${OMP_NUM_THREADS}" "${TMPDIR}" "${HF_HOME}" "${HF_DATASETS_CACHE}" "${TRANSFORMERS_CACHE}"
   printf 'MODELSCOPE_CACHE=%q TORCH_EXTENSIONS_DIR=%q TRITON_CACHE_DIR=%q CUDA_CACHE_PATH=%q SWIFT_LOG_FILE=%q ' \
     "${MODELSCOPE_CACHE}" "${TORCH_EXTENSIONS_DIR}" "${TRITON_CACHE_DIR}" "${CUDA_CACHE_PATH}" "${SWIFT_LOG_FILE}"
+  printf 'RESUME_FROM_CHECKPOINT=%q RESUME_ONLY_MODEL=%q ' \
+    "${RESUME_FROM_CHECKPOINT}" "${RESUME_ONLY_MODEL}"
+  printf 'PRESERVE_BEST_CHECKPOINT=%q BEST_CHECKPOINT_METRIC=%q BEST_CHECKPOINT_MODE=%q BEST_CHECKPOINT_WATCHER_LOG_FILE=%q ' \
+    "${PRESERVE_BEST_CHECKPOINT}" "${BEST_CHECKPOINT_METRIC}" "${BEST_CHECKPOINT_MODE}" "${BEST_CHECKPOINT_WATCHER_LOG_FILE}"
   printf '%q ' "${SFT_CMD[@]}"
   printf '\n'
   exit 0
 fi
+
+BEST_WATCHER_PID=""
+cleanup_best_watcher() {
+  if [[ -z "${BEST_WATCHER_PID}" ]]; then
+    return
+  fi
+  "${PYTHON_CMD[@]}" "${SCRIPT_DIR}/preserve_best_checkpoint.py" \
+    --run-dir "${OUTPUT_DIR}" \
+    --auto-latest-run \
+    --metric "${BEST_CHECKPOINT_METRIC}" \
+    --mode "${BEST_CHECKPOINT_MODE}" \
+    >> "${BEST_CHECKPOINT_WATCHER_LOG_FILE}" 2>&1 || true
+  if kill -0 "${BEST_WATCHER_PID}" >/dev/null 2>&1; then
+    kill "${BEST_WATCHER_PID}" >/dev/null 2>&1 || true
+  fi
+  BEST_WATCHER_PID=""
+}
+
+if [[ "${PRESERVE_BEST_CHECKPOINT}" == "true" || "${PRESERVE_BEST_CHECKPOINT}" == "True" || "${PRESERVE_BEST_CHECKPOINT}" == "1" ]]; then
+  "${PYTHON_CMD[@]}" "${SCRIPT_DIR}/preserve_best_checkpoint.py" \
+    --run-dir "${OUTPUT_DIR}" \
+    --auto-latest-run \
+    --metric "${BEST_CHECKPOINT_METRIC}" \
+    --mode "${BEST_CHECKPOINT_MODE}" \
+    --watch \
+    --watch-interval "${BEST_CHECKPOINT_WATCH_INTERVAL}" \
+    > "${BEST_CHECKPOINT_WATCHER_LOG_FILE}" 2>&1 &
+  BEST_WATCHER_PID="$!"
+  echo "Best-checkpoint watcher PID ${BEST_WATCHER_PID}; log: ${BEST_CHECKPOINT_WATCHER_LOG_FILE}" >&2
+fi
+trap 'cleanup_best_watcher' EXIT
+trap 'cleanup_best_watcher; exit 130' INT
+trap 'cleanup_best_watcher; exit 143' TERM
 
 echo "Writing training stdout/stderr to: ${SWIFT_LOG_FILE}" >&2
 set +e
 "${SFT_CMD[@]}" 2>&1 | tee -a "${SWIFT_LOG_FILE}"
 status=${PIPESTATUS[0]}
 set -e
+
+cleanup_best_watcher
+trap - EXIT INT TERM
 exit "${status}"
